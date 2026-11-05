@@ -1,5 +1,7 @@
 # WWF No Mercy Recompiled for Linux
 
+[![Watch the video](https://img.youtube.com/vi/ASuYdTVbwks/hqdefault.jpg)](https://www.youtube.com/watch?v=ASuYdTVbwks)
+
 This is an unofficial native Linux version of [WWF No Mercy: Recompiled](https://github.com/jessetbh/WWFNoMercyRecomp). The upstream project did not have a Linux release. This repository adds one for CachyOS and Arch Linux.
 
 The game is statically recompiled with N64Recomp and uses RT64 for graphics. It is not an emulator. You need your own WWF No Mercy USA Rev 1 ROM. The ROM and game textures are not included.
