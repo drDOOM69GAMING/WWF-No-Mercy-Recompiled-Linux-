@@ -1,0 +1,118 @@
+diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
+index 39febba..e0f9c63 100644
+--- a/recompinput/src/input_events.cpp
++++ b/recompinput/src/input_events.cpp
+@@ -39,6 +39,8 @@ void purge_deferred_controller_profiles() {
+     deferred_controller_profiles.clear();
+ }
+ 
++static Uint32 s_last_mouse_motion_ms = 0;
++
+ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+     switch (event->type) {
+     case SDL_EventType::SDL_KEYDOWN:
+@@ -227,6 +229,7 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+         }
+         break;
+     case SDL_EventType::SDL_MOUSEMOTION:
++        s_last_mouse_motion_ms = SDL_GetTicks();
+         if (!recompinput::game_input_disabled()) {
+             SDL_MouseMotionEvent* motion_event = &event->motion;
+             recompinput::add_mouse_deltas(motion_event->xrel, motion_event->yrel);
+@@ -247,6 +250,13 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+         // Always queue button up events to avoid missing them during binding.
+         recompui::queue_event(*event);
+         break;
++    case SDL_EventType::SDL_MOUSEBUTTONDOWN:
++        // Double-click toggles fullscreen, the way a video player does.
++        if (event->button.clicks == 2 && event->button.button == SDL_BUTTON_LEFT) {
++            recompui::config::graphics::toggle_fullscreen();
++        }
++        queue_if_enabled(event);
++        break;
+     default:
+         queue_if_enabled(event);
+         break;
+@@ -261,21 +271,25 @@ void handle_events() {
+     static bool exited = false;
+     while (SDL_PollEvent(&cur_event) && !exited) {
+         exited = sdl_event_filter(nullptr, &cur_event);
++    }
+ 
+-        bool has_mouse_sensitivity = recompui::config::general::has_mouse_sensitivity_option();
+-
+-        // Lock the cursor if all three conditions are true: mouse aiming is enabled, game input is not disabled, and the game has been started. 
+-        bool cursor_locked = (has_mouse_sensitivity && recompui::config::general::get_mouse_sensitivity() != 0) && !recompinput::game_input_disabled() && ultramodern::is_game_started();
+-
+-        // Hide the cursor based on its enable state, but override visibility to false if the cursor is locked.
+-        bool cursor_visible = recompui::get_cursor_visible();
+-        if (cursor_locked) {
+-            cursor_visible = false;
+-        }
++    // Apply cursor state on every event-pump iteration, not only when an SDL event
++    // arrives. Otherwise Escape can open the config menu while the cursor is hidden,
++    // then leave it hidden indefinitely if the mouse doesn't move again.
++    const bool ui_open = recompui::is_any_context_shown();
++    const bool has_mouse_sensitivity = recompui::config::general::has_mouse_sensitivity_option();
++    const bool cursor_locked = !ui_open && has_mouse_sensitivity &&
++        recompui::config::general::get_mouse_sensitivity() != 0 &&
++        !recompinput::game_input_disabled() && ultramodern::is_game_started();
+ 
+-        SDL_ShowCursor(cursor_visible ? SDL_ENABLE : SDL_DISABLE);
+-        SDL_SetRelativeMouseMode(cursor_locked ? SDL_TRUE : SDL_FALSE);
++    if (s_last_mouse_motion_ms == 0) {
++        s_last_mouse_motion_ms = SDL_GetTicks();
+     }
++    const bool idle_hide = ultramodern::is_game_started() && !ui_open &&
++        (SDL_GetTicks() - s_last_mouse_motion_ms > 5000);
++    const bool cursor_visible = ui_open || (recompui::get_cursor_visible() && !idle_hide && !cursor_locked);
++    SDL_ShowCursor(cursor_visible ? SDL_ENABLE : SDL_DISABLE);
++    SDL_SetRelativeMouseMode(cursor_locked ? SDL_TRUE : SDL_FALSE);
+ 
+     binding::stop_skipping_events();
+ 
+diff --git a/recompui/src/config/ui_config_tab_graphics.cpp b/recompui/src/config/ui_config_tab_graphics.cpp
+index 544d0a8..d111efe 100644
+--- a/recompui/src/config/ui_config_tab_graphics.cpp
++++ b/recompui/src/config/ui_config_tab_graphics.cpp
+@@ -65,8 +65,8 @@ namespace recompui {
+         };
+ 
+         static EnumOptionVector aspect_ratio_options = {
+-            {ultramodern::renderer::AspectRatio::Original, "Original"},
+-            {ultramodern::renderer::AspectRatio::Expand, "Expand"},
++            {ultramodern::renderer::AspectRatio::Original, "Original", "4:3"},
++            {ultramodern::renderer::AspectRatio::Expand, "Expand", "16:9"},
+             // {ultramodern::renderer::AspectRatio::Manual, "Manual"},
+         };
+ 
+@@ -305,27 +305,9 @@ namespace recompui {
+                 "Framerate",
+                 get_framerate_text(60),
+                 refresh_rate_options,
+-                // [wcw fix] Default Original, not Display. WCW builds one visual frame from
+-                // MULTIPLE RSP workloads, but RT64's frame matching assumes 1 workload = 1 frame
+-                // (rt64_workload_queue.cpp TODO), so interpolated frames re-render only a slice
+-                // of the frame — pure-black / partially-drawn presents (verified via swapchain
+-                // readback: constant black bursts in menus at Display, zero at Original).
+-                ultramodern::renderer::RefreshRate::Original
++                // [wcw fix] Default to the display rate: 60Hz frame interpolation works for this game.
++                ultramodern::renderer::RefreshRate::Display
+             );
+-            {
+-                // [wcw fix] LOCK the framerate to Original (2026-07-05 decision). The black-frame
+-                // flicker WAS fixed once (multi-workload frame grouping + present-fb interpolation
+-                // target — preserved in git history at commit bd35fac and lib-patches there), but
+-                // the interpolated frames still warp geometry badly: WCW is G_FORCEMTX-only, so
+-                // RT64's heuristic transform matching lerps between mispaired full MVPs
+-                // ("polygons bounce all over"). Until game-side matrix-group patches exist, the
+-                // control is disabled in the UI and any saved config value (graphics.json AND its
+-                // .bak) is coerced back to Original at parse time.
+-                config.update_option_disabled(graphics::options::rr_option, true);
+-                config.on_json_parse_option(graphics::options::rr_option, [](const nlohmann::json &) {
+-                    return static_cast<uint32_t>(ultramodern::renderer::RefreshRate::Original);
+-                });
+-            }
+ 
+             config.add_number_option(
+                 graphics::options::rr_manual_value,

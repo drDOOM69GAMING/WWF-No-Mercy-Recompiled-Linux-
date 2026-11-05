@@ -1,0 +1,107 @@
+diff --git a/ultramodern/src/mesgqueue.cpp b/ultramodern/src/mesgqueue.cpp
+index 4ba2e69..f054a6e 100644
+--- a/ultramodern/src/mesgqueue.cpp
++++ b/ultramodern/src/mesgqueue.cpp
+@@ -255,6 +255,16 @@ std::atomic_int wcw_ai_del{0}, wcw_ai_drop{0}, wcw_vi_del{0}, wcw_vi_drop{0};
+ std::atomic<int64_t> wcw_ai_maxlat{0}, wcw_vi_maxlat{0};
+ 
+ bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block) {
++    // [wcw fix] No Mercy can hand an unrelocated (garbage) queue pointer to an asynchronous send.
++    // Drop such a send, as for a full queue, instead of dereferencing it.
++    if ((uint32_t)mq_ < 0x80000000u || (uint32_t)mq_ >= 0x80800000u) {
++        static int invalidSends = 0;
++        if (invalidSends < 20) {
++            fprintf(stderr, "[wcw fix] do_send: invalid message queue 0x%08X, send dropped\n", (uint32_t)mq_);
++            invalidSends++;
++        }
++        return false;
++    }
+     OSMesgQueue* mq = TO_PTR(OSMesgQueue, mq_);
+     if (!block) {
+         // If non-blocking, fail if the queue is full.
+@@ -309,7 +319,11 @@ bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block) {
+     // If any threads were blocked on receiving from this message queue, pop the first one and schedule it.
+     PTR(PTR(OSThread)) blocked_queue = GET_MEMBER(OSMesgQueue, mq_, blocked_on_recv);
+     if (!ultramodern::thread_queue_empty(PASS_RDRAM blocked_queue)) {
+-        ultramodern::schedule_running_thread(PASS_RDRAM ultramodern::thread_queue_pop(PASS_RDRAM blocked_queue));
++        // [wcw fix] thread_queue_pop returns NULLPTR for a corrupt queue head.
++        PTR(OSThread) popped = ultramodern::thread_queue_pop(PASS_RDRAM blocked_queue);
++        if (popped != NULLPTR) {
++            ultramodern::schedule_running_thread(PASS_RDRAM popped);
++        }
+     }
+     
+     return true;
+@@ -345,7 +359,11 @@ bool do_recv(RDRAM_ARG PTR(OSMesgQueue) mq_, PTR(OSMesg) msg_, bool block) {
+     // If any threads were blocked on sending to this message queue, pop the first one and schedule it.
+     PTR(PTR(OSThread)) blocked_queue = GET_MEMBER(OSMesgQueue, mq_, blocked_on_send);
+     if (!ultramodern::thread_queue_empty(PASS_RDRAM blocked_queue)) {
+-        ultramodern::schedule_running_thread(PASS_RDRAM ultramodern::thread_queue_pop(PASS_RDRAM blocked_queue));
++        // [wcw fix] thread_queue_pop returns NULLPTR for a corrupt queue head.
++        PTR(OSThread) popped = ultramodern::thread_queue_pop(PASS_RDRAM blocked_queue);
++        if (popped != NULLPTR) {
++            ultramodern::schedule_running_thread(PASS_RDRAM popped);
++        }
+     }
+ 
+     return true;
+diff --git a/ultramodern/src/threadqueue.cpp b/ultramodern/src/threadqueue.cpp
+index c221bcf..c6749e4 100644
+--- a/ultramodern/src/threadqueue.cpp
++++ b/ultramodern/src/threadqueue.cpp
+@@ -1,4 +1,5 @@
+ #include <cassert>
++#include <cstdio>
+ 
+ #include "ultramodern/ultramodern.hpp"
+ 
+@@ -13,9 +14,20 @@ static PTR(OSThread)* queue_to_ptr(RDRAM_ARG PTR(PTR(OSThread)) queue) {
+ 
+ void ultramodern::thread_queue_insert(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(OSThread) toadd_) {
+     PTR(OSThread)* cur = queue_to_ptr(PASS_RDRAM queue_);
+-    OSThread* toadd = TO_PTR(OSThread, toadd_); 
++    OSThread* toadd = TO_PTR(OSThread, toadd_);
+     debug_printf("[Thread Queue] Inserting thread %d into queue 0x%08X\n", toadd->id, (uintptr_t)queue_);
+-    while (*cur && TO_PTR(OSThread, *cur)->priority > toadd->priority) {
++    // [wcw fix] Treat an invalid link (corrupt list) as the end of the list instead of following it.
++    while (*cur != NULLPTR) {
++        if ((uint32_t)*cur < 0x80000000u || (uint32_t)*cur >= 0x80800000u) {
++            fprintf(stderr, "[wcw fix] thread_queue_insert: invalid link 0x%08X in queue 0x%08X, truncated\n", (uint32_t)*cur, (uint32_t)queue_);
++            *cur = NULLPTR;
++            break;
++        }
++
++        if (!(TO_PTR(OSThread, *cur)->priority > toadd->priority)) {
++            break;
++        }
++
+         cur = &TO_PTR(OSThread, *cur)->next;
+     }
+     toadd->next = (*cur);
+@@ -40,6 +52,12 @@ void ultramodern::thread_queue_insert(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(O
+ PTR(OSThread) ultramodern::thread_queue_pop(RDRAM_ARG PTR(PTR(OSThread)) queue_) {
+     PTR(OSThread)* queue = queue_to_ptr(PASS_RDRAM queue_);
+     PTR(OSThread) ret = *queue;
++    // [wcw fix] A non-null but invalid head (queue never initialised) is treated as empty.
++    if ((uint32_t)ret != 0 && ((uint32_t)ret < 0x80000000u || (uint32_t)ret >= 0x80800000u)) {
++        fprintf(stderr, "[wcw fix] thread_queue_pop: invalid head 0x%08X in queue 0x%08X, dropped\n", (uint32_t)ret, (uint32_t)queue_);
++        *queue = NULLPTR;
++        return NULLPTR;
++    }
+     *queue = TO_PTR(OSThread, ret)->next;
+     TO_PTR(OSThread, ret)->queue = NULLPTR;
+     debug_printf("[Thread Queue] Popped thread %d from queue 0x%08X\n", TO_PTR(OSThread, ret)->id, (uintptr_t)queue_);
+diff --git a/ultramodern/src/threads.cpp b/ultramodern/src/threads.cpp
+index ae63bc2..4d8cd97 100644
+--- a/ultramodern/src/threads.cpp
++++ b/ultramodern/src/threads.cpp
+@@ -95,7 +95,8 @@ void ultramodern::set_native_thread_priority(ThreadPriority pri) {
+             throw std::runtime_error("Invalid thread priority!");
+             break;
+     }
+-    // SetThreadPriority(GetCurrentThread(), nPriority);
++    // [wcw fix] Apply the priority (this call was commented out, so it was computed but never set).
++    SetThreadPriority(GetCurrentThread(), nPriority);
+ }
+ #elif defined(__linux__)
+ #include <sys/prctl.h>

@@ -3,18 +3,27 @@
 // the game, auto-loads the ROM (no UI launcher yet), and calls recomp::start.
 // Adapted from Bomberman Hero: Recompiled's src/main/main.cpp.
 #include <cstdio>
+#include <fstream>
 #include <cstring>
 #include <cassert>
 #include <vector>
 #include <array>
 #include <filesystem>
 #include <thread>
+#if !defined(_WIN32)
+#include <unistd.h>
+#include <climits>
+#include <pwd.h>
+#include <cstdint>
+#endif
 #include <set>
 #include <chrono>
 
 #define SDL_MAIN_HANDLED
 #include "SDL.h"
-#include "SDL_syswm.h"
+#ifdef _WIN32
+#include "SDL_syswm.h" // [linux] Windows-only: on X11 it drags in Xlib, whose "None" macro breaks ultramodern::input::Pak::None
+#endif
 #include "nfd.h"
 
 #include "ultramodern/ultra64.h"
@@ -173,7 +182,7 @@ static void wcw_sample_all_threads() {
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
-static const recomp::Version version { 0, 1, 0, "" };
+static const recomp::Version version { 0, 1, 1, "" };
 
 template <typename... Ts>
 [[noreturn]] static void exit_error(const char* str, Ts... args) {
@@ -209,10 +218,10 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
     if (window == nullptr) {
         exit_error("Failed to create window: %s\n", SDL_GetError());
     }
+#if defined(_WIN32)
     SDL_SysWMinfo wmInfo;
     SDL_VERSION(&wmInfo.version);
     SDL_GetWindowWMInfo(window, &wmInfo);
-#if defined(_WIN32)
     return ultramodern::renderer::WindowHandle{ wmInfo.info.win.window, GetCurrentThreadId() };
 #else
     return ultramodern::renderer::WindowHandle{ window };
@@ -525,7 +534,229 @@ static void wcw_setup_logging(bool show_console) {
 }
 #endif
 
+#if !defined(_WIN32)
+// Single-file Linux build: the executable carries a small uncompressed payload
+// (assets/ and recompcontrollerdb.txt) appended after the ELF image. On launch
+// it unpacks that payload into ~/.config/WWF_No_Mercy and runs from there, so
+// the only file the user keeps is the executable itself.
+namespace wcw_pack {
+static constexpr const char* program_id = "WWF_No_Mercy";
+static constexpr const char* payload_magic = "NMPAYL01";
+static constexpr const char* trailer_magic = "NMZPKG01";
+static constexpr size_t trailer_size = 24; // magic[8] + payload_size(u64) + version(u64)
+
+static uint16_t read_u16(const uint8_t* p) {
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+static uint32_t read_u32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+static uint64_t read_u64(const uint8_t* p) {
+    return static_cast<uint64_t>(read_u32(p)) | (static_cast<uint64_t>(read_u32(p + 4)) << 32);
+}
+
+static std::filesystem::path config_dir() {
+    const char* home = getenv("HOME");
+    if (home == nullptr || home[0] == '\0') {
+        struct passwd* pw = getpwuid(getuid());
+        if (pw != nullptr) {
+            home = pw->pw_dir;
+        }
+    }
+    if (home == nullptr || home[0] == '\0') {
+        return {};
+    }
+    return std::filesystem::path(home) / ".config" / program_id;
+}
+
+// Reads the trailer and returns the payload location/version. Returns false for
+// a normal (unpacked) development binary that has no payload appended.
+static bool read_trailer(std::ifstream& in, uintmax_t file_size, uint64_t& payload_size, uint64_t& version) {
+    if (file_size < trailer_size) {
+        return false;
+    }
+    uint8_t trailer[trailer_size];
+    in.seekg(static_cast<std::streamoff>(file_size - trailer_size));
+    in.read(reinterpret_cast<char*>(trailer), trailer_size);
+    if (!in || memcmp(trailer, trailer_magic, 8) != 0) {
+        return false;
+    }
+    payload_size = read_u64(trailer + 8);
+    version = read_u64(trailer + 16);
+    return payload_size != 0 && payload_size <= file_size - trailer_size;
+}
+
+static bool safe_relative_path(const std::string& name, std::filesystem::path& out) {
+    if (name.empty() || name[0] == '/' || name.find('\\') != std::string::npos ||
+        name.find(':') != std::string::npos) {
+        return false;
+    }
+    std::filesystem::path rel(name);
+    for (const auto& part : rel) {
+        if (part == "..") {
+            return false;
+        }
+    }
+    out = std::move(rel);
+    return true;
+}
+
+static void seed_defaults(const std::filesystem::path& target) {
+    auto write_if_missing = [&target](const char* name, const char* text) {
+        std::error_code ec;
+        std::filesystem::path path = target / name;
+        if (std::filesystem::exists(path, ec)) {
+            return;
+        }
+        std::ofstream out(path, std::ios::binary);
+        out << text;
+    };
+    write_if_missing("graphics.json",
+        "{\n"
+        "    \"api_option\": \"Auto\",\n"
+        "    \"ar_option\": \"Expand\",\n"
+        "    \"developer_mode\": false,\n"
+        "    \"ds_option\": 0,\n"
+        "    \"hpfb_option\": \"Off\",\n"
+        "    \"hr_option\": \"Clamp16x9\",\n"
+        "    \"msaa_option\": \"MSAA2X\",\n"
+        "    \"res_option\": \"Auto\",\n"
+        "    \"rr_manual_value\": 60,\n"
+        "    \"rr_option\": \"Display\",\n"
+        "    \"wm_option\": \"Fullscreen\"\n"
+        "}\n");
+    write_if_missing("sound.json", "{\n    \"main_volume\": 100\n}\n");
+}
+
+// Extracts the appended payload into ~/.config/WWF_No_Mercy. Returns true when
+// a payload was present (the app must then run from the config folder).
+static bool extract_payload(const std::filesystem::path& exe) {
+    std::error_code ec;
+    const uintmax_t file_size = std::filesystem::file_size(exe, ec);
+    if (ec) {
+        return false;
+    }
+    std::ifstream in(exe, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    uint64_t payload_size = 0;
+    uint64_t version = 0;
+    if (!read_trailer(in, file_size, payload_size, version)) {
+        return false;
+    }
+
+    const std::filesystem::path target = config_dir();
+    if (target.empty()) {
+        return false;
+    }
+    std::filesystem::create_directories(target, ec);
+
+    char version_text[32];
+    snprintf(version_text, sizeof(version_text), "%016llx", static_cast<unsigned long long>(version));
+    const std::filesystem::path marker = target / ".pack_version";
+    {
+        std::ifstream marker_in(marker, std::ios::binary);
+        std::string existing;
+        std::getline(marker_in, existing);
+        if (existing == version_text &&
+            std::filesystem::exists(target / "assets" / "InterVariable.ttf", ec)) {
+            std::filesystem::current_path(target, ec);
+            return true;
+        }
+    }
+
+    const uint64_t payload_offset = file_size - trailer_size - payload_size;
+    std::vector<uint8_t> payload(static_cast<size_t>(payload_size));
+    in.seekg(static_cast<std::streamoff>(payload_offset));
+    in.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload_size));
+    if (!in || payload.size() < 16 || memcmp(payload.data(), payload_magic, 8) != 0) {
+        fprintf(stderr, "[wcw] packaged payload is corrupt\n");
+        return false;
+    }
+    const uint32_t format = read_u32(payload.data() + 8);
+    const uint32_t count = read_u32(payload.data() + 12);
+    if (format != 1) {
+        fprintf(stderr, "[wcw] unsupported payload format %u\n", format);
+        return false;
+    }
+
+    size_t pos = 16;
+    uint32_t extracted = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (pos + 2 > payload.size()) {
+            return false;
+        }
+        const uint16_t name_len = read_u16(payload.data() + pos);
+        pos += 2;
+        if (pos + name_len + 8 > payload.size()) {
+            return false;
+        }
+        const std::string name(reinterpret_cast<const char*>(payload.data() + pos), name_len);
+        pos += name_len;
+        const uint64_t data_len = read_u64(payload.data() + pos);
+        pos += 8;
+        if (pos + data_len > payload.size()) {
+            return false;
+        }
+
+        std::filesystem::path rel;
+        if (!safe_relative_path(name, rel)) {
+            fprintf(stderr, "[wcw] skipping unsafe payload path: %s\n", name.c_str());
+            pos += data_len;
+            continue;
+        }
+        std::filesystem::path dest = target / rel;
+        std::filesystem::create_directories(dest.parent_path(), ec);
+
+        // Assets are refreshed whenever the payload version changes; user-edited
+        // config files are seeded once and never overwritten.
+        const bool always_write = name.rfind("assets/", 0) == 0 || name == "recompcontrollerdb.txt";
+        if (always_write || !std::filesystem::exists(dest, ec)) {
+            std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(payload.data() + pos),
+                      static_cast<std::streamsize>(data_len));
+            if (!out) {
+                fprintf(stderr, "[wcw] failed to write %s\n", dest.string().c_str());
+                return false;
+            }
+            extracted++;
+        }
+        pos += data_len;
+    }
+
+    seed_defaults(target);
+    {
+        std::ofstream marker_out(marker, std::ios::binary | std::ios::trunc);
+        marker_out << version_text << "\n";
+    }
+    std::filesystem::current_path(target, ec);
+    fprintf(stderr, "[wcw] unpacked %u files into %s\n", extracted, target.string().c_str());
+    return true;
+}
+
+static void prepare_runtime() {
+    char exe_buf[PATH_MAX];
+    const ssize_t len = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
+    if (len > 0) {
+        exe_buf[len] = '\0';
+        std::error_code ec;
+        const std::filesystem::path exe(exe_buf);
+        if (extract_payload(exe)) {
+            return;
+        }
+        // No payload (development build): behave as before, running beside the exe.
+        std::filesystem::current_path(exe.parent_path(), ec);
+    }
+}
+} // namespace wcw_pack
+#endif
+
 int main(int argc, char** argv) {
+#if !defined(_WIN32)
+    wcw_pack::prepare_runtime();
+#endif
     bool show_console = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--show-console") == 0) {
@@ -534,11 +765,16 @@ int main(int argc, char** argv) {
     }
     (void)show_console;
 
-    // Program identity. The program id names the config/save folder
-    // (%LOCALAPPDATA%\NoMercyRecompiled on Windows) — keep it matched to the exe name.
+    // Program identity. The program id names the config/save folder. On Linux the
+    // single-file build unpacks to and runs from ~/.config/WWF_No_Mercy, so this
+    // must match wcw_pack::program_id; get_app_folder_path() resolves here too.
     // Set before anything that resolves the app folder (logging below, config path later).
     recompui::programconfig::set_program_name("WWF No Mercy: Recompiled");
+#if defined(_WIN32)
     recompui::programconfig::set_program_id(u8"NoMercyRecompiled");
+#else
+    recompui::programconfig::set_program_id(u8"WWF_No_Mercy");
+#endif
 
 #ifdef _WIN32
     wcw_setup_logging(show_console);
@@ -692,38 +928,38 @@ int main(int argc, char** argv) {
     recompinput::players::set_single_player_mode(false);
     recompinput::players::set_player_count_range(1, 4);
 
-    // WCW-specific default bindings (must run before the config tabs load / any profile is
-    // created — recompinput forbids changing defaults after first use). WCW's in-ring scheme
-    // (manual): D-PAD moves, ANALOG STICK taunts, L = duck/dodge, R = block/guard, C-Down =
-    // run, C-Up = climb/flip, C-Left/Right = switch focus, Z = unused. The generic recomp
-    // defaults fit badly (movement not on left stick; duck on LB while block is on RT).
-    // Layout here: move = left stick + d-pad; taunt = right stick; duck = LEFT trigger and
-    // block = RIGHT trigger (mirrored defensive pair); grapple = A, attack = X, run = B,
-    // climb/flip = Y, focus = LB/RB, Z parked on left-stick click.
+    // Controller defaults (must run before the config tabs load / any profile is created —
+    // recompinput forbids changing defaults after first use). Xbox One layout from
+    // ~/Desktop/controls: left stick = movement (N64 D-pad),
+    // Xbox D-pad = N64 C-buttons, right stick = N64 analog stick (taunts/specials),
+    // Xbox A = grapple, Xbox X = punch, LT/RT = L/R, right-stick click = Z, Menu = Start.
     {
         using recompinput::GameInput;
         using recompinput::InputField;
         auto pad_digital = [](SDL_GameControllerButton b) { return InputField::controller_digital(b); };
         auto pad_analog = [](SDL_GameControllerAxis a, bool positive) { return InputField::controller_analog(a, positive); };
 
-        recompinput::set_default_mapping_for_controller(GameInput::DPAD_LEFT,  { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_LEFT),  pad_analog(SDL_CONTROLLER_AXIS_LEFTX, false) });
-        recompinput::set_default_mapping_for_controller(GameInput::DPAD_RIGHT, { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_RIGHT), pad_analog(SDL_CONTROLLER_AXIS_LEFTX, true) });
-        recompinput::set_default_mapping_for_controller(GameInput::DPAD_UP,    { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_UP),    pad_analog(SDL_CONTROLLER_AXIS_LEFTY, false) });
-        recompinput::set_default_mapping_for_controller(GameInput::DPAD_DOWN,  { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_DOWN),  pad_analog(SDL_CONTROLLER_AXIS_LEFTY, true) });
+        recompinput::set_default_mapping_for_controller(GameInput::A,          { pad_digital(recompinput::SDL_CONTROLLER_BUTTON_SOUTH) });
+        recompinput::set_default_mapping_for_controller(GameInput::B,          { pad_digital(recompinput::SDL_CONTROLLER_BUTTON_WEST) });
+        recompinput::set_default_mapping_for_controller(GameInput::DPAD_LEFT,  { pad_analog(SDL_CONTROLLER_AXIS_LEFTX, false) });
+        recompinput::set_default_mapping_for_controller(GameInput::DPAD_RIGHT, { pad_analog(SDL_CONTROLLER_AXIS_LEFTX, true) });
+        recompinput::set_default_mapping_for_controller(GameInput::DPAD_UP,    { pad_analog(SDL_CONTROLLER_AXIS_LEFTY, false) });
+        recompinput::set_default_mapping_for_controller(GameInput::DPAD_DOWN,  { pad_analog(SDL_CONTROLLER_AXIS_LEFTY, true) });
         recompinput::set_default_mapping_for_controller(GameInput::X_AXIS_NEG, { pad_analog(SDL_CONTROLLER_AXIS_RIGHTX, false) });
         recompinput::set_default_mapping_for_controller(GameInput::X_AXIS_POS, { pad_analog(SDL_CONTROLLER_AXIS_RIGHTX, true) });
         recompinput::set_default_mapping_for_controller(GameInput::Y_AXIS_POS, { pad_analog(SDL_CONTROLLER_AXIS_RIGHTY, false) });
         recompinput::set_default_mapping_for_controller(GameInput::Y_AXIS_NEG, { pad_analog(SDL_CONTROLLER_AXIS_RIGHTY, true) });
         recompinput::set_default_mapping_for_controller(GameInput::L,          { pad_analog(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) });
         recompinput::set_default_mapping_for_controller(GameInput::R,          { pad_analog(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) });
-        recompinput::set_default_mapping_for_controller(GameInput::Z,          { pad_digital(SDL_CONTROLLER_BUTTON_LEFTSTICK) });
-        recompinput::set_default_mapping_for_controller(GameInput::C_UP,       { pad_digital(recompinput::SDL_CONTROLLER_BUTTON_NORTH) });
-        recompinput::set_default_mapping_for_controller(GameInput::C_DOWN,     { pad_digital(recompinput::SDL_CONTROLLER_BUTTON_EAST) });
-        recompinput::set_default_mapping_for_controller(GameInput::C_LEFT,     { pad_digital(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) });
-        recompinput::set_default_mapping_for_controller(GameInput::C_RIGHT,    { pad_digital(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) });
+        recompinput::set_default_mapping_for_controller(GameInput::Z,          { pad_digital(SDL_CONTROLLER_BUTTON_RIGHTSTICK) });
+        recompinput::set_default_mapping_for_controller(GameInput::C_UP,       { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_UP) });
+        recompinput::set_default_mapping_for_controller(GameInput::C_DOWN,     { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_DOWN) });
+        recompinput::set_default_mapping_for_controller(GameInput::C_LEFT,     { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_LEFT) });
+        recompinput::set_default_mapping_for_controller(GameInput::C_RIGHT,    { pad_digital(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) });
+        recompinput::set_default_mapping_for_controller(GameInput::ACCEPT_MENU, { pad_digital(recompinput::SDL_CONTROLLER_BUTTON_WEST) });
+        recompinput::set_default_mapping_for_controller(GameInput::BACK_MENU,   { pad_digital(recompinput::SDL_CONTROLLER_BUTTON_EAST) });
 
         // Keyboard: same semantics — WASD = move (d-pad), IJKL = taunt (analog stick).
-        // The generic default had these reversed for WCW (WASD was the stick = taunt).
         recompinput::set_default_mapping_for_keyboard(GameInput::DPAD_LEFT,  { InputField::keyboard(SDL_SCANCODE_A) });
         recompinput::set_default_mapping_for_keyboard(GameInput::DPAD_RIGHT, { InputField::keyboard(SDL_SCANCODE_D) });
         recompinput::set_default_mapping_for_keyboard(GameInput::DPAD_UP,    { InputField::keyboard(SDL_SCANCODE_W) });
@@ -750,6 +986,9 @@ int main(int argc, char** argv) {
     recompui::config::create_sound_tab();
     recompui::config::finalize();
 
+    // Must run after the controls config is loaded (it creates/looks up input profiles, which
+    // recompinput only permits once defaults are settled) and before the game starts.
+
     // ROM intake. Default: the recompui launcher menu — first run shows "Load ROM" (nfd
     // file dialog, validated against the registered hash, then stored/remembered in the
     // config path); later runs show "Start Game" (librecomp's check_all_stored_roms, run
@@ -763,7 +1002,11 @@ int main(int argc, char** argv) {
             ? std::filesystem::path(autoboot) : std::filesystem::path("nomercy.z64");
         auto rom_err = recomp::select_rom(autoboot_rom, game_id);
         if (rom_err != recomp::RomValidationError::Good) {
+#if defined(_WIN32)
             exit_error("WCW_AUTOBOOT ROM validation failed (err=%d) for %ls.\n", (int)rom_err, autoboot_rom.c_str());
+#else
+            exit_error("WCW_AUTOBOOT ROM validation failed (err=%d) for %s.\n", (int)rom_err, autoboot_rom.string().c_str());
+#endif
         }
     }
     else {

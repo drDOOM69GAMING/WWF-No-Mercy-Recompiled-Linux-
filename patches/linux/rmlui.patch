@@ -1,0 +1,13 @@
+diff --git a/Include/RmlUi/Core/Containers/robin_hood.h b/Include/RmlUi/Core/Containers/robin_hood.h
+index 3992be14..6926aed9 100644
+--- a/Include/RmlUi/Core/Containers/robin_hood.h
++++ b/Include/RmlUi/Core/Containers/robin_hood.h
+@@ -38,6 +38,8 @@
+ #define ROBIN_HOOD_VERSION_MINOR 9 // for adding functionality in a backwards-compatible manner
+ #define ROBIN_HOOD_VERSION_PATCH 0 // for backwards-compatible bug fixes
+ 
++#include <cstdint>
++#include <cstddef>
+ #include <limits>
+ #include <algorithm>
+ #include <cstdlib>

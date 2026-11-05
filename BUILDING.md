@@ -1,10 +1,70 @@
 # Building Guide
 
-**Building is NOT required to play** — download a release zip instead (see the
-README). This guide is for contributors building from source on Windows (the beta
-is Windows-only; CI in `.github/workflows/validate.yml` runs these exact steps).
+Building is not required to play. Download the Linux executable from Releases or follow the Linux steps below.
 
-The pipeline has two halves:
+## Linux build on Arch Linux or CachyOS
+
+Install the build tools and runtime libraries:
+
+```sh
+sudo pacman -S --needed base-devel cmake ninja clang python sdl2 freetype2 gtk3 vulkan-headers vulkan-icd-loader
+```
+
+Clone the Linux repository and its submodules, then apply the Linux patches:
+
+```sh
+git clone --recursive https://github.com/drDOOM69GAMING/WWF-No-Mercy-Recompiled-Linux-.git
+cd WWF-No-Mercy-Recompiled-Linux-
+./tools/apply-linux-patches.sh
+```
+
+You need your own USA Rev 1 ROM to generate `RecompiledFuncs/` and `rsp/nomercy_audio.cpp`. Put it in the repository root as `nomercy.z64`.
+
+Build the recompiler tools on Linux:
+
+```sh
+git clone --recurse-submodules https://github.com/N64Recomp/N64Recomp.git N64RecompSource
+git -C N64RecompSource checkout ffb39cdad1da5de07eaaa48bd1db4a89a7986771
+git -C N64RecompSource submodule update --init --recursive
+cmake -S N64RecompSource -B N64RecompSource/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build N64RecompSource/build --target N64RecompCLI RSPRecomp
+cp N64RecompSource/build/N64Recomp .
+cp N64RecompSource/build/RSPRecomp .
+```
+
+Run the recompiler and required fixups:
+
+```sh
+./N64Recomp nomercy.toml
+python3 tools/fix_stumps.py
+python3 tools/fix_switches.py
+python3 tools/fix_jraddend.py
+python3 tools/fix_backbranches.py
+python3 tools/fix_selfentry.py
+python3 tools/readd_hand_edits.py
+python3 tools/audit_coresidency.py
+./RSPRecomp rsp/nomercy_audio.toml
+```
+
+Then build and package as shown above. Keep your ROM and generated game code private.
+
+Build and package the executable:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target NoMercyRecompiled -j"$(nproc)"
+python3 tools/pack_single_file.py \
+  --binary build/NoMercyRecompiled \
+  --assets assets \
+  --extra recompcontrollerdb.txt \
+  --output dist/NoMercyRecompiled
+```
+
+The result is one ELF executable. It contains the UI files and controller database, but not the ROM or game textures.
+
+## Windows build from source
+
+The Windows build pipeline has two halves:
 
 1. **Recompile** — run `N64Recomp` on your ROM to generate `RecompiledFuncs/`
    (~19 MB of C), run the **mandatory post-regen fixups** (§4 — this game needs
@@ -96,6 +156,9 @@ python tools\fix_stumps.py                 # rechains functions N64Recomp trunca
 #   at overlapping same-section symbols (dropped epilogues = stack corruption)
 python tools\fix_switches.py               # completes jump tables truncated at
 #   out-of-function entries (truncated tables abort the process via switch_error)
+python tools\fix_jraddend.py               # repairs jump tables whose INDEX N64Recomp
+#   const-folded to 0 (loop-induction-pointer-indexed tables: the switch collapses to
+#   case 0). Caused championship wins to be recorded as losses — see docs history.
 python tools\fix_backbranches.py           # audits every function for branches
 #   outside its decoded span (N64Recomp silently reroutes them to a bogus local
 #   label). If it prints MISSING lines: add the printed extra_funcs entries,
