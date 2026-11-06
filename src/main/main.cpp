@@ -38,6 +38,10 @@
 #include "recompinput/input_events.h"
 #include "recompinput/input_state.h"
 #include "recompinput/players.h"
+#ifdef NOMERCY_ONLINE
+#include "../netplay/netplay_input.hpp"
+#include "../netplay/netplay_ui.hpp"
+#endif
 #include "librecomp/game.hpp"
 #include "librecomp/rsp.hpp"
 #include "ovl_patches.hpp"
@@ -255,18 +259,72 @@ static void update_virtual_pads() {
     }
 }
 
+// N64 input callbacks. The default build goes straight to recompinput; the
+// experimental online build wraps the same callback.
+static void wcw_poll_input() {
+    recompinput::poll_inputs();
+#ifdef NOMERCY_ONLINE
+    auto& session = wcw::netplay::InputSession::instance();
+    if (session.enabled() && !session.poll_input()) {
+        fprintf(stderr, "[netplay] session stopped; closing game to avoid divergent simulation\n");
+        ultramodern::quit();
+    }
+#endif
+}
+
+static bool wcw_get_input(int controller_num, uint16_t* buttons, float* x, float* y) {
+#ifdef NOMERCY_ONLINE
+    auto& session = wcw::netplay::InputSession::instance();
+    if (session.enabled()) {
+        return session.get_input(controller_num, buttons, x, y);
+    }
+#endif
+    return recompinput::profiles::get_n64_input(controller_num, buttons, x, y);
+}
+
+// [wcw] Diagnostic: press F9 to write a snapshot of the game's RDRAM (8 MB) to the app
+// folder, timestamped and logged. Compare snapshots taken at the same point in a match
+// with different difficulty / reversal behavior to find the values the CPU AI reads.
 void update_gfx(void*) {
     update_virtual_pads();
     recompinput::handle_events();
+    static bool f9_was_down = false;
+    const uint8_t* keys = SDL_GetKeyboardState(nullptr);
+    bool f9_down = keys != nullptr && keys[SDL_SCANCODE_F9];
+    if (f9_down && !f9_was_down && g_ww_rdram != nullptr) {
+        static int dump_index = 0;
+        std::filesystem::path path = recompui::file::get_app_folder_path() /
+            ("rdram_snapshot_" + std::to_string(++dump_index) + ".bin");
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(g_ww_rdram), 8 * 1024 * 1024);
+        fprintf(stderr, "[nomercy][snapshot] wrote %s (8 MB RDRAM)\n", path.string().c_str());
+    }
+    f9_was_down = f9_down;
 }
 
 ultramodern::input::connected_device_info_t get_connected_device_info(int controller_num) {
-    // All four ports report a controller so the game considers every player slot joinable
-    // (unassigned players read as neutral input, like an idle plugged-in pad). Only port 1
-    // has a pak: the emulated hybrid Controller/Rumble Pak in librecomp si.cpp.
-    return { .connected_device = ultramodern::input::Device::Controller,
-             .connected_pak = (controller_num == 0) ? ultramodern::input::Pak::RumblePak
-                                                    : ultramodern::input::Pak::None };
+    // Netplay needs all four ports to look joinable so 4-player sessions can
+    // seat remote pads. Offline, only the ports that actually have a player
+    // assigned should report a controller; reporting all four makes the game
+    // think extra humans are present and fill the match with CPU partners /
+    // opponents (the 2-vs-1 bug).
+#ifdef NOMERCY_ONLINE
+    if (wcw::netplay::InputSession::instance().enabled()) {
+        return { .connected_device = ultramodern::input::Device::Controller,
+                 .connected_pak = (controller_num == 0) ? ultramodern::input::Pak::RumblePak
+                                                        : ultramodern::input::Pak::None };
+    }
+#endif
+
+    const size_t assigned_players = std::max<size_t>(
+        recompinput::players::get_number_of_assigned_players(), 1);
+    const bool connected = controller_num >= 0 &&
+        static_cast<size_t>(controller_num) < assigned_players;
+    return { .connected_device = connected ? ultramodern::input::Device::Controller
+                                           : ultramodern::input::Device::None,
+             .connected_pak = (connected && controller_num == 0)
+                                  ? ultramodern::input::Pak::RumblePak
+                                  : ultramodern::input::Pak::None };
 }
 
 // ---------------- audio (minimal: queue as-is, 16-bit stereo) ----------------
@@ -753,6 +811,121 @@ static void prepare_runtime() {
 } // namespace wcw_pack
 #endif
 
+#if !defined(_WIN32)
+// [wcw] Linux diagnostics. All game output (stdout/stderr) is tee'd with timestamps to
+// <app folder>/nomercy.log while still appearing in the terminal; the previous run's log is
+// kept as nomercy.prev.log. A heartbeat line every 5 s reports the video frame counter and
+// warns when frames stop advancing; fatal signals and uncaught exceptions are logged with
+// a backtrace before the process exits.
+#include <csignal>
+#include <execinfo.h>
+#include <fcntl.h>
+#include <string>
+extern uint64_t total_vis;
+namespace wcw_log {
+static int terminal_fd = -1;
+static int log_fd = -1;
+static std::chrono::steady_clock::time_point start_time;
+
+static void write_all(int fd, const char* data, size_t size) {
+    while (fd >= 0 && size > 0) {
+        ssize_t n = ::write(fd, data, size);
+        if (n <= 0) return;
+        data += n;
+        size -= static_cast<size_t>(n);
+    }
+}
+
+static void emit(const std::string& text) {
+    double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+    char prefix[32];
+    int plen = snprintf(prefix, sizeof(prefix), "[%9.3f] ", t);
+    write_all(terminal_fd, prefix, static_cast<size_t>(plen));
+    write_all(terminal_fd, text.data(), text.size());
+    write_all(log_fd, prefix, static_cast<size_t>(plen));
+    write_all(log_fd, text.data(), text.size());
+}
+
+static void emit_backtrace() {
+    void* frames[64];
+    int count = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, count, terminal_fd);
+    backtrace_symbols_fd(frames, count, log_fd);
+}
+
+static void reader_loop(int pipe_read) {
+    std::string pending;
+    char buf[4096];
+    for (;;) {
+        ssize_t n = ::read(pipe_read, buf, sizeof(buf));
+        if (n <= 0) break;
+        pending.append(buf, static_cast<size_t>(n));
+        size_t pos;
+        while ((pos = pending.find('\n')) != std::string::npos) {
+            emit(pending.substr(0, pos + 1));
+            pending.erase(0, pos + 1);
+        }
+    }
+    if (!pending.empty()) emit(pending + "\n");
+}
+
+static void heartbeat_loop() {
+    uint64_t last = 0;
+    int stalls = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        uint64_t vis = total_vis;
+        stalls = (vis == last) ? stalls + 1 : 0;
+        last = vis;
+        char line[200];
+        snprintf(line, sizeof(line), "[nomercy][heartbeat] video_frames=%llu%s\n",
+            (unsigned long long)vis,
+            stalls >= 2 ? " WARNING: no video frames for 10s (possible freeze)" : "");
+        emit(line);
+    }
+}
+
+static void fatal_signal(int sig) {
+    char line[128];
+    snprintf(line, sizeof(line), "[nomercy][fatal] signal %d (%s) - backtrace follows\n",
+        sig, strsignal(sig));
+    emit(line);
+    emit_backtrace();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void fatal_terminate() {
+    emit("[nomercy][fatal] uncaught exception / std::terminate - backtrace follows\n");
+    emit_backtrace();
+    abort();
+}
+
+static void setup() {
+    start_time = std::chrono::steady_clock::now();
+    std::filesystem::path folder = recompui::file::get_app_folder_path();
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    std::filesystem::path log_path = folder / "nomercy.log";
+    std::filesystem::rename(log_path, folder / "nomercy.prev.log", ec);
+    log_fd = ::open(log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    terminal_fd = ::dup(STDERR_FILENO);
+
+    int pipefd[2];
+    if (::pipe(pipefd) != 0) return;
+    ::dup2(pipefd[1], STDOUT_FILENO);
+    ::dup2(pipefd[1], STDERR_FILENO);
+    ::close(pipefd[1]);
+    std::thread(reader_loop, pipefd[0]).detach();
+    std::thread(heartbeat_loop).detach();
+
+    for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL}) signal(sig, fatal_signal);
+    std::set_terminate(fatal_terminate);
+    emit("[nomercy] logging to " + log_path.string() + "\n");
+}
+} // namespace wcw_log
+#endif
+
 int main(int argc, char** argv) {
 #if !defined(_WIN32)
     wcw_pack::prepare_runtime();
@@ -774,6 +947,9 @@ int main(int argc, char** argv) {
     recompui::programconfig::set_program_id(u8"NoMercyRecompiled");
 #else
     recompui::programconfig::set_program_id(u8"WWF_No_Mercy");
+#endif
+#if !defined(_WIN32)
+    wcw_log::setup();
 #endif
 
 #ifdef _WIN32
@@ -984,6 +1160,11 @@ int main(int argc, char** argv) {
     recompui::config::create_graphics_tab();
     recompui::config::create_controls_tab();
     recompui::config::create_sound_tab();
+#ifdef NOMERCY_ONLINE
+    // Online play settings tab (launcher "Play Online" / Esc menu).
+    wcw::netplay::ui::register_netplay_ui(
+        supported_games[0].game_id, supported_games[0].mod_game_id);
+#endif
     recompui::config::finalize();
 
     // Must run after the controls config is loaded (it creates/looks up input profiles, which
@@ -1036,6 +1217,14 @@ int main(int argc, char** argv) {
                 supported_games[0].thumbnail_bytes,
                 recompui::GameOptionsMenuLayout::Center);
             game_options_menu->add_start_game_or_load_rom_option();
+#ifdef NOMERCY_ONLINE
+            game_options_menu->add_option("Play Online", []() {
+                recompui::update_game_mod_id(supported_games[0].mod_game_id);
+                recompui::config::set_tab("netplay");
+                recompui::hide_all_contexts();
+                recompui::config::open();
+            });
+#endif
             game_options_menu->add_setup_controls_option();
             game_options_menu->add_settings_option();
             game_options_menu->add_exit_option();
@@ -1074,8 +1263,8 @@ int main(int argc, char** argv) {
     ultramodern::gfx_callbacks_t gfx_callbacks{ .create_gfx = create_gfx, .create_window = create_window, .update_gfx = update_gfx };
     ultramodern::audio_callbacks_t audio_callbacks{ .queue_samples = queue_samples, .get_frames_remaining = get_frames_remaining, .set_frequency = set_frequency };
     ultramodern::input::callbacks_t input_callbacks{
-        .poll_input = recompinput::poll_inputs,
-        .get_input = recompinput::profiles::get_n64_input,
+        .poll_input = wcw_poll_input,
+        .get_input = wcw_get_input,
         .set_rumble = recompinput::set_rumble,
         .get_connected_device_info = get_connected_device_info,
     };

@@ -5,6 +5,10 @@
 #   cmake --build build-msvc --target NoMercyRecompiled
 cmake_minimum_required(VERSION 3.20)
 project(NoMercyRecompiled LANGUAGES C CXX)
+
+# Experimental online client. Off by default so a normal build stays the stable
+# offline game. Enable with -DNOMERCY_ONLINE=ON in a separate build directory.
+option(NOMERCY_ONLINE "Build the experimental online netplay client" OFF)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,6 +151,15 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/rsp/nomercy_audio.cpp
 )
 
+if (NOMERCY_ONLINE)
+    list(APPEND SOURCES
+        ${CMAKE_SOURCE_DIR}/src/netplay/netplay_input.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/netplay_signaling.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/netplay_stun.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/netplay_ui.cpp
+    )
+endif()
+
 # RetroAchievements prototype: vendored rcheevos (see src/ra/rcheevos/VENDORED.txt)
 # compiled into the game exe. Softcore-only client, env-gated at runtime (WCW_RA=1).
 file(GLOB RCHEEVOS_SOURCES
@@ -164,6 +177,9 @@ target_compile_definitions(NoMercyRecompiled PRIVATE
     RC_DISABLE_LUA
     RC_CLIENT_SUPPORTS_HASH
 )
+if (NOMERCY_ONLINE)
+    target_compile_definitions(NoMercyRecompiled PRIVATE NOMERCY_ONLINE)
+endif()
 if (WIN32)
     target_link_libraries(NoMercyRecompiled PRIVATE winhttp.lib)
 endif()
@@ -209,13 +225,23 @@ endif()
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     # [linux] SDL2 from the system; threads/dl for the runtime; rt64 links X11 itself.
     find_package(Threads REQUIRED)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     target_include_directories(NoMercyRecompiled PRIVATE ${SDL2_INCLUDE_DIRS})
     if (TARGET SDL2::SDL2)
         target_link_libraries(NoMercyRecompiled PRIVATE SDL2::SDL2)
     else()
         target_link_libraries(NoMercyRecompiled PRIVATE ${SDL2_LIBRARIES})
     endif()
-    target_link_libraries(NoMercyRecompiled PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    target_link_libraries(NoMercyRecompiled PRIVATE Threads::Threads OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    if (NOMERCY_ONLINE)
+        find_package(CURL REQUIRED)
+        target_include_directories(NoMercyRecompiled PRIVATE ${CURL_INCLUDE_DIRS})
+        if (TARGET CURL::libcurl)
+            target_link_libraries(NoMercyRecompiled PRIVATE CURL::libcurl)
+        else()
+            target_link_libraries(NoMercyRecompiled PRIVATE ${CURL_LIBRARIES})
+        endif()
+    endif()
     # Look for bundled libraries in ./lib next to the binary first (see tools/linux/build_linux.sh).
     set_target_properties(NoMercyRecompiled PROPERTIES BUILD_RPATH "$ORIGIN/lib" INSTALL_RPATH "$ORIGIN/lib")
 endif()

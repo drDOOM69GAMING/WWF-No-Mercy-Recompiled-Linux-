@@ -7,7 +7,7 @@ Building is not required to play. Download the Linux executable from Releases or
 Install the build tools and runtime libraries:
 
 ```sh
-sudo pacman -S --needed base-devel cmake ninja clang python sdl2 freetype2 gtk3 vulkan-headers vulkan-icd-loader
+sudo pacman -S --needed base-devel cmake ninja clang python sdl2 freetype2 gtk3 vulkan-headers vulkan-icd-loader openssl curl
 ```
 
 Clone the Linux repository and its submodules, then apply the Linux patches:
@@ -61,6 +61,26 @@ python3 tools/pack_single_file.py \
 ```
 
 The result is one ELF executable. It contains the UI files and controller database, but not the ROM or game textures.
+
+### Online build (experimental)
+
+The default build above is offline. The online client is a separate CMake option
+so a normal build does not depend on libcurl:
+
+```sh
+cmake -S . -B build-online -G Ninja -DCMAKE_BUILD_TYPE=Release -DNOMERCY_ONLINE=ON
+cmake --build build-online --target NoMercyRecompiled -j"$(nproc)"
+python3 tools/pack_single_file.py \
+  --binary build-online/NoMercyRecompiled \
+  --assets assets \
+  --extra recompcontrollerdb.txt \
+  --output dist/NoMercyRecompiled
+```
+
+`NOMERCY_ONLINE=ON` requires libcurl and OpenSSL. Use a separate build directory
+so the offline and online binaries do not overwrite each other. See
+[tools/netplay/README.md](tools/netplay/README.md) for the signaling service and
+the current online limits.
 
 ## Windows build from source
 

@@ -36,14 +36,45 @@ Textures are read from your ROM at runtime. They are not dumped or bundled with 
 
 F11 and Alt+Enter toggle fullscreen. A left-button double-click also toggles fullscreen.
 
+## Play online (experimental)
+
+The bundled `dist/NoMercyRecompiled` build includes the online client. A default
+source build stays offline; see [BUILDING.md](BUILDING.md) for the
+`-DNOMERCY_ONLINE=ON` build. From the launcher choose **Play Online**, then:
+
+- **Host & Wait** creates an invite-code room, shows the code, and starts the
+  match automatically when the configured players have joined. **Start Now**
+  begins early; **Cancel Lobby** backs out.
+- **Join Game** / **Spectate** join a room by code. The room secret is issued by
+  the signaling service, so there is no shared password to type.
+- 2–4 players, plus spectators. Input delay is adjustable for higher-latency
+  links.
+
+The host needs a reachable signaling server. Run the bundled one with:
+
+```sh
+python3 tools/netplay/signaling_server.py
+```
+
+Play is direct peer-to-peer UDP with STUN/hole punching; the service does not
+relay gameplay. Some strict/symmetric NATs still need a forwarded UDP port.
+Every player needs the same USA Rev 1 ROM. The online build requires `libcurl`.
+See [tools/netplay/README.md](tools/netplay/README.md) for details and limits.
+
+## CRT filter
+
+The **Graphics** tab has a **CRT Filter** setting with scanlines, aperture
+grille, shadow mask, and slot mask options, plus scanline, mask, curvature, and
+vignette strengths. It is off by default.
+
 ## Requirements
 
 - 64-bit Linux. Tested on CachyOS and intended for Arch Linux.
 - A Vulkan-capable graphics driver.
-- SDL2, FreeType, and GTK3 runtime libraries.
+- SDL2, FreeType, GTK3, OpenSSL, and libcurl (online) runtime libraries.
 - A working audio service. PipeWire is supported through SDL.
 
-This Linux build does not include the upstream Windows CRT filter, ray tracing, or HDR options.
+This Linux build does not include the upstream Windows ray tracing or HDR options.
 
 ## Build from source
 

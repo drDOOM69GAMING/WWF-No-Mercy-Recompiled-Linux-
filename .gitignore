@@ -92,3 +92,11 @@ saves/
 *.z64
 *.n64
 *.v64
+
+# Packaged release binaries and Python cache
+dist/
+__pycache__/
+*.pyc
+
+# ROM archives (never commit)
+*.zip

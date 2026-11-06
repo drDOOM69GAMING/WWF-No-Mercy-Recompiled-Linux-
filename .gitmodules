@@ -1,12 +1,12 @@
 [submodule "lib/N64ModernRuntime"]
 	path = lib/N64ModernRuntime
-	url = https://github.com/jessetbh/N64ModernRuntime.git
-	branch = wcw
+	url = https://github.com/drDOOM69GAMING/N64ModernRuntime.git
+	branch = wcw-linux
 [submodule "lib/RecompFrontend"]
 	path = lib/RecompFrontend
-	url = https://github.com/jessetbh/RecompFrontend.git
-	branch = wcw
+	url = https://github.com/drDOOM69GAMING/RecompFrontend.git
+	branch = wcw-linux
 [submodule "lib/rt64"]
 	path = lib/rt64
-	url = https://github.com/jessetbh/rt64.git
-	branch = wcw
+	url = https://github.com/drDOOM69GAMING/rt64.git
+	branch = wcw-linux

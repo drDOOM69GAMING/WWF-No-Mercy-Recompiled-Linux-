@@ -10,7 +10,10 @@ KNOWN-BENIGN findings on a healthy tree (all never-return functions):
   thread entries func_80000EDC / func_80001024 / func_80001180 (event threads),
   func_800033D4 (render), func_80026F18 (audio mgr), func_800222D8 (game loop),
   and func_80006668 (exits via LOOKUP_FUNC shared tail, which this scan does
-  not recognize as a tail call). Anything NEW in the output = investigate.
+  not recognize as a tail call). The first boot with USA Rev 1 also confirmed
+  recomp_entrypoint and func_80000E3C / func_80000F98 / func_800010F4 /
+  func_8002B5B8 are non-returning boot/thread entries. Anything NEW in the
+  output = investigate.
 """
 import re, os, glob
 from collections import Counter
@@ -22,7 +25,8 @@ sp_re = re.compile(r'ctx->r29 = ADD32\(ctx->r29, (-?0X[0-9A-F]+)\)')
 call_re = re.compile(r'^\s*(\w+)\(rdram, ctx\);')
 
 BENIGN = {'func_80000EDC', 'func_80001024', 'func_80001180', 'func_800033D4',
-          'func_80026F18', 'func_800222D8', 'func_80006668'}
+          'func_80026F18', 'func_800222D8', 'func_80006668', 'recomp_entrypoint',
+          'func_80000E3C', 'func_80000F98', 'func_800010F4', 'func_8002B5B8'}
 
 leaks = []
 nfuncs = 0

@@ -184,6 +184,19 @@ def main():
         save_lines('funcs_0.c', lines)
         applied.append('memsz4 REMOVED from funcs_0.c')
 
+    # The ROM's entry code calls this ignored runtime bridge. N64Recomp emits
+    # the call in C but does not emit a prototype for TOML-ignored symbols;
+    # keep the generated C valid for compilers that reject implicit functions.
+    lines = load_lines('funcs_0.c')
+    if not any(l.startswith('extern void osDriveRomInit(') for l in lines):
+        insert_after_includes(lines, [
+            '/* [nomercy] runtime bridge implemented in src/game/recomp_api.cpp. */\n',
+            'extern void osDriveRomInit(uint8_t* rdram, recomp_context* ctx);\n',
+            '\n',
+        ])
+        save_lines('funcs_0.c', lines)
+        applied.append('osDriveRomInit prototype -> funcs_0.c')
+
     # [emitprobe]/[mstprobe] RETIRED (session 5): the render-pipeline probes that
     # cornered the exploded-wrestler bug. Root cause fixed by tools/fix_selfentry.py
     # (misplaced self-entry branch labels); see docs/bringup-plan.md session 5.
