@@ -1,6 +1,6 @@
 # WWF No Mercy Recompiled for Linux
 
-NoMercyRecompiled v0.1.1 (Linux) [![Watch the video]([[https://img.youtube.com/vi/ASuYdTVbwks/hqdefault.jpg)](https://www.youtube.com/watch?v=ASuYdTVbwks](https://www.youtube.com/watch?v=syq1364O8ZQ&t)](https://www.youtube.com/watch?v=syq1364O8ZQ))
+[![NoMercyRecompiled v0.1.1 (Linux)](https://img.youtube.com/vi/syq1364O8ZQ/0.jpg)](https://www.youtube.com/watch?v=syq1364O8ZQ)
 
 This is an unofficial native Linux version of [WWF No Mercy: Recompiled](https://github.com/jessetbh/WWFNoMercyRecomp). The upstream project did not have a Linux release. This repository adds one for CachyOS and Arch Linux.
 
