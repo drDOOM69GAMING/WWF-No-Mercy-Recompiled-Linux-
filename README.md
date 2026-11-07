@@ -6,7 +6,16 @@
 
 This is an unofficial native Linux version of [WWF No Mercy: Recompiled](https://github.com/jessetbh/WWFNoMercyRecomp). The upstream project did not have a Linux release. This repository adds one for CachyOS and Arch Linux.
 
-The game is statically recompiled with N64Recomp and uses RT64 for graphics. It is not an emulator. You need your own WWF No Mercy USA Rev 1 ROM. The ROM and game textures are not included.
+The game is statically recompiled with N64Recomp and uses RT64 for graphics. It is not an emulator. You need your own WWF No Mercy USA Rev 1 ROM; the ROM, textures, and other game data are not included and are never distributed by this project.
+
+## Requirements
+
+- 64-bit Linux. Tested on CachyOS and intended for Arch Linux.
+- A Vulkan-capable graphics driver.
+- SDL2, FreeType, GTK3, OpenSSL, and libcurl (online) runtime libraries.
+- A working audio service. PipeWire is supported through SDL.
+
+This Linux build does not include the upstream Windows ray tracing or HDR options.
 
 ## Download and run
 
@@ -17,7 +26,9 @@ chmod +x NoMercyRecompiled
 ./NoMercyRecompiled
 ```
 
-Choose your USA Rev 1 ROM on first launch. The game remembers it. The executable carries the UI files and controller database it needs, then unpacks them. The ROM, saves, and settings stay in:
+`NoMercyRecompiled` is the online build and requires `libcurl`. `NoMercyRecompiled.offline` is the offline fallback with no network code.
+
+Choose your USA Rev 1 ROM on first launch. The game remembers it. The executable embeds only its UI files and controller database; it contains no ROM, textures, or game data. The ROM, saves, and settings stay in:
 
 ```text
 ~/.config/WWF_No_Mercy/
@@ -25,7 +36,7 @@ Choose your USA Rev 1 ROM on first launch. The game remembers it. The executable
 
 Textures are read from your ROM at runtime. They are not dumped or bundled with the app.
 
-## Xbox controls
+## Controls (Xbox layout)
 
 - Left stick moves
 - D-pad uses the four C-button actions
@@ -34,7 +45,7 @@ Textures are read from your ROM at runtime. They are not dumped or bundled with 
 - X punches and kicks
 - LT and RT are L and R
 - Right-stick click is Z
-- Menu pauses
+- Menu button pauses
 
 F11 and Alt+Enter toggle fullscreen. A left-button double-click also toggles fullscreen.
 
@@ -69,15 +80,6 @@ The **Graphics** tab has a **CRT Filter** setting with scanlines, aperture
 grille, shadow mask, and slot mask options, plus scanline, mask, curvature, and
 vignette strengths. It is off by default.
 
-## Requirements
-
-- 64-bit Linux. Tested on CachyOS and intended for Arch Linux.
-- A Vulkan-capable graphics driver.
-- SDL2, FreeType, GTK3, OpenSSL, and libcurl (online) runtime libraries.
-- A working audio service. PipeWire is supported through SDL.
-
-This Linux build does not include the upstream Windows ray tracing or HDR options.
-
 ## Build from source
 
 Building is not needed to play. To build, see [BUILDING.md](BUILDING.md). Building the game code requires your own USA Rev 1 ROM. The ROM is used to generate the recompiled code and must not be shared.
@@ -87,3 +89,11 @@ The Linux changes, dependency patches, and single-file packer are included here.
 ## About this port
 
 This repository is an independent Linux port based on the GPL-3.0 licensed upstream project. It is not an official release from the upstream developers. Please report Linux-specific problems in this repository's Issues.
+
+## License
+
+This repository is licensed under GPL-3.0; see [COPYING](COPYING). It is based on the GPL-3.0 licensed upstream project.
+
+WWF No Mercy and all related names, marks, and assets are the property of their respective rights holders. This project is not affiliated with or endorsed by WWE, THQ, Asmik Ace, AKI Corporation, or the upstream developers.
+
+This project does not distribute the game, its ROM, or its assets. You must supply your own legally obtained copy.
